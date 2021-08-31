@@ -1,1 +1,1 @@
-document.querySelector('#app').innerHTML = "Hello React";
+document.querySelector("#react-app").innerHTML = "Hello React";
