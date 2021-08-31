@@ -30,6 +30,9 @@ class MyElement extends HTMLElement {
     // 元素从DOM中删除时执行，此时进行一些卸载操作
     console.log("micro-app has disconnected");
     // 获取应用实例
+    const app = appInstanceMap.get(this.name);
+    // 如果有属性destroy，则完全卸载应用包括缓存的文件
+    app.unmount(this.hasAttribute("destory"));
   }
 
   attributeChangedCallback(attrName, oldVal, newVal) {

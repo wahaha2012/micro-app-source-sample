@@ -1,4 +1,5 @@
 import loadHtml from "./source";
+import Sandbox from "./sandbox";
 
 // 创建微应用
 export default class CreateApp {
@@ -7,6 +8,8 @@ export default class CreateApp {
     this.url = url; // url地址
     this.container = container; // micro-app元素
     this.status = "loading";
+
+    this.sandbox = new Sandbox(name);
     loadHtml(this);
   }
 
@@ -45,9 +48,12 @@ export default class CreateApp {
     // 将格式化后的DOM结构插入到容器中
     this.container.appendChild(fragment);
 
+    // 启动沙箱
+    this.sandbox.start();
+
     // 执行js
     this.source.scripts.forEach((info) => {
-      (0, eval)(info.code);
+      (0, eval)(this.sandbox.bindScope(info.code));
     });
 
     // 标记应用为已渲染
@@ -57,8 +63,20 @@ export default class CreateApp {
   /**
    * 卸载应用
    * 执行关闭沙箱，清空缓存等操作
+   * @param {Boolean} destory 是否完全销毁，删除缓存资源
    */
-  unmount() {}
+  unmount(destroy) {
+    // 更新状态
+    this.status = "unmount";
+    // 清空容器
+    this.container = null;
+    // 停用沙箱
+    this.sandbox.stop();
+    // destory为true，则删除应用
+    if (destroy) {
+      appInstanceMap.delete(this.name);
+    }
+  }
 }
 
 export const appInstanceMap = new Map();

@@ -170,6 +170,150 @@
       });
   }
 
+  // 记录addEventListener、removeEventListener原生方法
+  const rawWindowAddEventListener = window.addEventListener;
+  const rawWindowRemoveEventListener = window.removeEventListener;
+
+  /**
+   * 重写全局事件的监听和解绑
+   * @param {*} microWindow 原型对象
+   */
+  function effect(microWindow) {
+    // 使用Map记录全局事件
+    const eventListenerMap = new Map();
+
+    // 重写addEventListener
+    microWindow.addEventListener = function (type, listener, options) {
+      const listenerList = eventListenerMap.get(type);
+      // 当前事件非第一次监听，则添加缓存
+      if (listenerList) {
+        listenerList.add(listener);
+      } else {
+        // 当前事件第一次监听，则初始化数据
+        eventListenerMap.set(type, new Set([listener]));
+      }
+      // 执行原生监听函数
+      return rawWindowAddEventListener.call(window, type, listener, options);
+    };
+
+    // 重写removeEventListener
+    microWindow.removeEventListener = function (type, listener, options) {
+      const listenerList = eventListenerMap.get(type);
+      // 从缓存中删除监听函数
+      if (listenerList?.size && listenerList.has(listener)) {
+        listenerList.delete(listener);
+      }
+      // 执行原生解绑函数
+      return rawWindowRemoveEventListener.call(window, type, listener, options);
+    };
+
+    // 清空残余事件
+    return () => {
+      console.log("需要卸载的全局事件", eventListenerMap);
+      // 清空window绑定事件
+      if (eventListenerMap.size) {
+        // 将残余的没有解绑的函数依次解绑
+        eventListenerMap.forEach((listenerList, type) => {
+          if (listenerList.size) {
+            for (const listener of listenerList) {
+              rawWindowRemoveEventListener.call(window, type, listener);
+            }
+          }
+        });
+        eventListenerMap.clear();
+      }
+    };
+  }
+
+  class SandBox {
+    active = false; // 沙箱是否在运行
+    microWindow = {}; // 代理的对象
+    injectedKeys = new Set(); // 新添加的属性，在卸载时清空
+
+    constructor() {
+      // 卸载钩子
+      this.releaseEffect = effect(this.microWindow);
+
+      this.proxyWindow = new Proxy(this.microWindow, {
+        // 取值
+        get(target, key) {
+          // 优先从代理对象上取值
+          if (Reflect.has(target, key)) {
+            return Reflect.get(target, key);
+          }
+
+          // 否则兜底到window对象上取值
+          const rawValue = Reflect.get(window, key);
+
+          // 如果兜底的值为函数，则需要绑定window对象，如：console、alert等
+          if (typeof rawValue === "function") {
+            const valueStr = rawValue.toString();
+            // 排除构造函数
+            if (
+              !/^function\s+[A-Z]/.test(valueStr) &&
+              !/^class\s+/.test(valueStr)
+            ) {
+              return rawValue.bind(window);
+            }
+          }
+
+          // 其它情况直接返回
+          return rawValue;
+        },
+
+        // 赋值
+        set(target, key, value) {
+          // 沙箱只有在运行时可以设置变量
+          if (this.active) {
+            Reflect.set(target, key, value);
+
+            // 记录添加的变量，用于后续清空操作
+            this.injectedKeys.add(key);
+          }
+
+          return true;
+        },
+
+        deleteProperty(target, key) {
+          // 当前key存在于代理对象上时才满足删除条件
+          if (target.hasOwnProperty(key)) {
+            return Reflect.deleteProperty(target, key);
+          }
+          return true;
+        },
+      });
+    }
+
+    // 启动
+    start() {
+      if (!this.active) {
+        this.active = true;
+      }
+    }
+
+    // 停止
+    stop() {
+      if (this.active) {
+        this.active = false;
+
+        // 清空变量
+        this.injectedKeys.forEach((key) => {
+          Reflect.deleteProperty(this.microWindow, key);
+        });
+        this.injectedKeys.clear();
+
+        // 卸载全局事件
+        this.releaseEffect();
+      }
+    }
+
+    // 修改js作用域
+    bindScope(code) {
+      window.proxyWindow = this.proxyWindow;
+      return `;(function(window, self){with(window){;${code}\n}}).call(window.proxyWindow, window.proxyWindow, window.proxyWindow);`;
+    }
+  }
+
   // 创建微应用
   class CreateApp {
     constructor({ name, url, container }) {
@@ -177,6 +321,8 @@
       this.url = url; // url地址
       this.container = container; // micro-app元素
       this.status = "loading";
+
+      this.sandbox = new SandBox(name);
       loadHtml(this);
     }
 
@@ -215,9 +361,12 @@
       // 将格式化后的DOM结构插入到容器中
       this.container.appendChild(fragment);
 
+      // 启动沙箱
+      this.sandbox.start();
+
       // 执行js
       this.source.scripts.forEach((info) => {
-        (0, eval)(info.code);
+        (0, eval)(this.sandbox.bindScope(info.code));
       });
 
       // 标记应用为已渲染
@@ -227,8 +376,20 @@
     /**
      * 卸载应用
      * 执行关闭沙箱，清空缓存等操作
+     * @param {Boolean} destory 是否完全销毁，删除缓存资源
      */
-    unmount() {}
+    unmount(destroy) {
+      // 更新状态
+      this.status = "unmount";
+      // 清空容器
+      this.container = null;
+      // 停用沙箱
+      this.sandbox.stop();
+      // destory为true，则删除应用
+      if (destroy) {
+        appInstanceMap.delete(this.name);
+      }
+    }
   }
 
   const appInstanceMap = new Map();
@@ -262,6 +423,10 @@
     disconnectedCallback() {
       // 元素从DOM中删除时执行，此时进行一些卸载操作
       console.log("micro-app has disconnected");
+      // 获取应用实例
+      const app = appInstanceMap.get(this.name);
+      // 如果有属性destroy，则完全卸载应用包括缓存的文件
+      app.unmount(this.hasAttribute("destory"));
     }
 
     attributeChangedCallback(attrName, oldVal, newVal) {
@@ -294,8 +459,13 @@
     },
   };
 
-  document.querySelector("#app").innerHTML = "Hello Vue";
-
   SimpleMicroApp.start();
+
+  const app = document.querySelector("#app");
+  app.innerHTML = "Hello Vue";
+  app.addEventListener("click", function () {
+    const container = document.querySelector("#container");
+    container.parentElement.removeChild(container);
+  });
 
 })));
