@@ -9,6 +9,12 @@ module.exports = {
   globals: {
     Atomics: "readonly",
     SharedArrayBuffer: "readonly",
+    document: "readonly",
+    CustomEvent: "readonly",
+    Element: "readonly",
+    window: "readonly",
+    MutationObserver: "readonly",
+    HTMLElement: "readonly",
   },
   parser: "babel-eslint",
   parserOptions: {
@@ -17,5 +23,6 @@ module.exports = {
   },
   rules: {
     "prettier/prettier": "error",
+    "no-undef": ["error", { typeof: true }],
   },
 };

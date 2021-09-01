@@ -1,3 +1,5 @@
+/*global fetch*/
+
 /**
  * 获取静态资源
  * @param {string} url 静态资源地址

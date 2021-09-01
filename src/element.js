@@ -1,7 +1,11 @@
 import CreateApp, { appInstanceMap } from "./app";
+import { patchDocument, releaseDocumentPatch } from "./patch";
 
 // 自定义元素
 class MyElement extends HTMLElement {
+  // 记录微应用个数
+  static microAppCount = 0;
+
   // 声明需要监听的属性名，只有这些属性变化时才会触发attributeChangedCallback
   static get observedAttributes() {
     return ["name", "url"];
@@ -14,6 +18,11 @@ class MyElement extends HTMLElement {
   connectedCallback() {
     // 元素被插入到DOM时执行，此时去加载子应用的静态资源并渲染
     console.log("micro-app is connected");
+
+    // 自定义元素只执行一次的内容
+    if (++MyElement.microAppCount === 1) {
+      patchDocument();
+    }
 
     // 创建微应用实例
     const app = new CreateApp({
@@ -33,6 +42,12 @@ class MyElement extends HTMLElement {
     const app = appInstanceMap.get(this.name);
     // 如果有属性destroy，则完全卸载应用包括缓存的文件
     app.unmount(this.hasAttribute("destory"));
+
+    if (MyElement.microAppCount > 0) {
+      if (--MyElement.microAppCount === 0) {
+        releaseDocumentPatch();
+      }
+    }
   }
 
   attributeChangedCallback(attrName, oldVal, newVal) {

@@ -1,4 +1,4 @@
-document.querySelector("#react-app").innerHTML = "Hello React";
+window.document.querySelector("#app").innerHTML = "Hello React";
 
 window.globalStr = "child";
 

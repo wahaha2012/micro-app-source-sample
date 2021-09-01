@@ -3,7 +3,17 @@
   factory();
 }((function () { 'use strict';
 
-  let templateStyle; // 模板style
+  /*global fetch*/
+
+  /**
+   * 获取静态资源
+   * @param {string} url 静态资源地址
+   */
+  function fetchSource(url) {
+    return fetch(url).then((res) => {
+      return res.text();
+    });
+  }
 
   /**
    * 修改CSS规则，添加前缀
@@ -39,6 +49,7 @@
       });
     });
   }
+
   /**
    * 处理media和supports规则
    * @param {*} rule cssRules
@@ -81,6 +92,8 @@
     return result;
   }
 
+  let templateStyle; // 模板style
+
   /**
    * 进行样式隔离
    * @param {HTMLStyleElement} styleElement style元素
@@ -103,7 +116,7 @@
       templateStyle.textContent = styleElement.textContent;
       // 格式化规则，并将格式化后的规则赋值给style元素
       styleElement.textContent = scopedRule(
-        Array.from(templateStyle.sheet?.cssRules || []),
+        Array.from(templateStyle.sheet?.cssRules ?? []),
         prefix
       );
       // 清空模板style内容
@@ -115,7 +128,7 @@
         observer.disconnect();
         // 格式化规则，并将格式化后的规则赋值给style元素
         styleElement.textContent = scopedRule(
-          Array.from(styleElement.sheet?.cssRules || []),
+          Array.from(styleElement.sheet?.cssRules ?? []),
           prefix
         );
       });
@@ -125,15 +138,7 @@
     }
   }
 
-  /**
-   * 获取静态资源
-   * @param {string} url 静态资源地址
-   */
-  function fetchSource(url) {
-    return fetch(url).then((res) => {
-      return res.text();
-    });
-  }
+  /*global HTMLLinkElement, HTMLScriptElement, HTMLStyleElement*/
 
   function fetchLinksFromHtml(app, microAppHead, htmlDom) {
     const linkEntries = Array.from(app.source.links.entries());
@@ -296,6 +301,143 @@
       });
   }
 
+  /**
+   * 格式化事件名称，保证基座应用和子应用的绑定通信
+   * @param {*} appName 应用名称
+   * @param {*} fromBaseApp 是否从基座应用发送数据
+   * @returns
+   */
+  function formatEventName(appName, fromBaseApp) {
+    if (typeof appName !== "string" || !appName) {
+      return "";
+    }
+    return fromBaseApp
+      ? `__from_base_app_${appName}__`
+      : `__from_micro_app_${appName}__`;
+  }
+
+  // 发布订阅系统
+  class EventCenter {
+    // 缓存数据和绑定函数
+    eventList = new Map();
+
+    /**
+     * 绑定监听函数
+     * @param {*} name 事件名称
+     * @param {*} f 处理函数
+     */
+    on(name, f) {
+      let eventInfo = this.eventList.get(name);
+      // 如果没有缓存，则初始化
+      if (!eventInfo) {
+        eventInfo = {
+          data: {},
+          callbacks: new Set(),
+        };
+        // 放入缓存
+        this.eventList.set(name, eventInfo);
+      }
+
+      // 记录绑定函数
+      eventInfo.callbacks.add(f);
+    }
+
+    /**
+     * 解除绑定
+     * @param {*} name
+     * @param {*} f
+     */
+    off(name, f) {
+      const eventInfo = this.eventList.get(name);
+      // eventInfo存在且f为函数则卸载指定函数
+      if (eventInfo && typeof f === "function") {
+        eventInfo.callbacks.delete(f);
+      }
+    }
+
+    // 发送数据
+    dispatch(name, data) {
+      const eventInfo = this.eventList.get(name);
+      // 当数据不相等时才更新
+      if (eventInfo && eventInfo.data !== data) {
+        eventInfo.data = data;
+        // 遍历执行所有绑定函数
+        for (const f of eventInfo.callbacks) {
+          f(data);
+        }
+      }
+    }
+  }
+
+  // 创建发布订阅对象
+  const eventCenter = new EventCenter();
+
+  // 基座应用的数据通信方法集合
+  class EventCenterForBaseApp {
+    /**
+     * 向指定子应用发送数据
+     * @param {*} appName 子应用名称
+     * @param {*} data 对象数据
+     */
+    setData(appName, data) {
+      eventCenter.dispatch(formatEventName(appName, true), data);
+    }
+
+    /**
+     * 清空某个应用的监听函数
+     * @param {*} appName 子应用名称
+     */
+    clearDataListener(appName) {
+      eventCenter.off(formatEventName(appName, false));
+    }
+  }
+
+  // 子应用的数据通信方法集合
+  class EventCenterForMicroApp {
+    constructor(appName) {
+      this.appName = appName;
+    }
+
+    /**
+     * 监听基座应用发送的数据
+     * @param {*} cb 绑定函数
+     */
+    addDataListener(cb) {
+      eventCenter.on(formatEventName(this.appName, true), cb);
+    }
+
+    /**
+     * 解除监听函数
+     * @param {*} cb 绑定函数
+     */
+    removeDataListener(cb) {
+      if (typeof cb === "function") {
+        eventCenter.off(formatEventName(this.appName, true), cb);
+      }
+    }
+
+    dispatch(data) {
+      const app = appInstanceMap.get(this.appName);
+      if (app?.container) {
+        // 子应用以自定义事件的形式发送数据
+        const event = new CustomEvent("datachange", {
+          detail: {
+            data,
+          },
+        });
+
+        app.container.dispatchEvent(event);
+      }
+    }
+
+    /**
+     * 清空当前子应用绑定的所有监听函数
+     */
+    clearDataListener() {
+      eventCenter.off(formatEventName(this.appName, true));
+    }
+  }
+
   // 记录addEventListener、removeEventListener原生方法
   const rawWindowAddEventListener = window.addEventListener;
   const rawWindowRemoveEventListener = window.removeEventListener;
@@ -351,6 +493,30 @@
     };
   }
 
+  const rawDocument = new Function("return document")();
+  const rawWindow = new Function("return window")();
+
+  /**
+   * currentAppName
+   */
+  let currentMicroAppName = null;
+  function setCurrentAppName(appName) {
+    currentMicroAppName = appName;
+  }
+
+  function getCurrentAppName() {
+    return currentMicroAppName;
+  }
+
+  /**
+   * 延迟任务
+   * @param {*} fn 回调函数
+   * @param  {...any} args 入参
+   */
+  function defer(fn, ...args) {
+    Promise.resolve().then(fn.bind(null, ...args));
+  }
+
   class SandBox {
     active = false; // 沙箱是否在运行
     microWindow = {}; // 代理的对象
@@ -365,13 +531,45 @@
       this.proxyWindow = new Proxy(this.microWindow, {
         // 取值
         get(target, key) {
+          // 顶层对象
+          if (["window", "self", "globalThis"].includes(key)) {
+            return this.proxyWindow;
+          }
+
+          if (key === "top" || key === "parent") {
+            // 无嵌套iframe
+            if (rawWindow === rawWindow.parent) {
+              return this.proxyWindow;
+            } else {
+              // iframe中
+              return Reflect.get(rawWindow, key);
+            }
+          }
+
+          if (key === "hasOwnProperty") {
+            return hasOwnProperty;
+          }
+
+          if (key === "document" || key === "eval") {
+            // 临时设置共享独享currentMicroAppName
+            setCurrentAppName(appName);
+            // 同步执行栈结束，借助EventLoop，重置currentMicroAppName
+            defer(() => setCurrentAppName(null));
+            switch (key) {
+              case "document":
+                return rawDocument;
+              case "eval":
+                return eval;
+            }
+          }
+
           // 优先从代理对象上取值
           if (Reflect.has(target, key)) {
             return Reflect.get(target, key);
           }
 
           // 否则兜底到window对象上取值
-          const rawValue = Reflect.get(window, key);
+          const rawValue = Reflect.get(rawWindow, key);
 
           // 如果兜底的值为函数，则需要绑定window对象，如：console、alert等
           if (typeof rawValue === "function") {
@@ -525,145 +723,64 @@
 
   const appInstanceMap = new Map();
 
-  /**
-   * 格式化事件名称，保证基座应用和子应用的绑定通信
-   * @param {*} appName 应用名称
-   * @param {*} fromBaseApp 是否从基座应用发送数据
-   * @returns
-   */
-  function formatEventName(appName, fromBaseApp) {
-    if (typeof appName !== "string" || !appName) {
-      return "";
-    }
-    return fromBaseApp
-      ? `__from_base_app_${appName}__`
-      : `__from_micro_app_${appName}__`;
-  }
+  /*global Document*/
 
-  // 发布订阅系统
-  class EventCenter {
-    // 缓存数据和绑定函数
-    eventList = new Map();
+  const BaseAppData = new EventCenterForBaseApp();
 
-    /**
-     * 绑定监听函数
-     * @param {*} name 事件名称
-     * @param {*} f 处理函数
-     */
-    on(name, f) {
-      let eventInfo = this.eventList.get(name);
-      // 如果没有缓存，则初始化
-      if (!eventInfo) {
-        eventInfo = {
-          data: {},
-          callbacks: new Set(),
-        };
-        // 放入缓存
-        this.eventList.set(name, eventInfo);
-      }
+  const rawQuerySelector = Document.prototype.querySelector;
 
-      // 记录绑定函数
-      eventInfo.callbacks.add(f);
-    }
+  function patchElementPrototype() {
+    // 记录原生方法
+    const rawSetAttribute = Element.prototype.setAttribute;
 
-    /**
-     * 解除绑定
-     * @param {*} name
-     * @param {*} f
-     */
-    off(name, f) {
-      const eventInfo = this.eventList.get(name);
-      // eventInfo存在且f为函数则卸载指定函数
-      if (eventInfo && typeof f === "function") {
-        eventInfo.callbacks.delete(f);
-      }
-    }
-
-    // 发送数据
-    dispatch(name, data) {
-      const eventInfo = this.eventList.get(name);
-      // 当数据不相等时才更新
-      if (eventInfo && eventInfo.data !== data) {
-        eventInfo.data = data;
-        // 遍历执行所有绑定函数
-        for (const f of eventInfo.callbacks) {
-          f(data);
+    // 重写setAttribute
+    Element.prototype.setAttribute = function setAttribute(key, value) {
+      // 目标为micro-app标签且属性名称为data时进行处理
+      if (/^micro-app/i.test(this.tagName) && key === "data") {
+        if (toString.call(value) === "[object Object]") {
+          // 克隆一个新的对象
+          const cloneValue = {};
+          Object.getOwnPropertyNames(value).forEach((propertyKey) => {
+            // 过滤vue框架注入的数据
+            if (
+              !(
+                typeof propertyKey === "string" && propertyKey.indexOf("__") === 0
+              )
+            ) {
+              cloneValue[propertyKey] = value[propertyKey];
+            }
+          });
+          // 发送数据
+          BaseAppData.setData(this.getAttribute("name"), cloneValue);
         }
+      } else {
+        rawSetAttribute.call(this, key, value);
       }
-    }
+    };
   }
 
-  // 创建发布订阅对象
-  const eventCenter = new EventCenter();
-
-  // 基座应用的数据通信方法集合
-  class EventCenterForBaseApp {
-    /**
-     * 向指定子应用发送数据
-     * @param {*} appName 子应用名称
-     * @param {*} data 对象数据
-     */
-    setData(appName, data) {
-      eventCenter.dispatch(formatEventName(appName, true), data);
+  function patchDocument() {
+    // QuerySelector
+    function querySelector(selectors) {
+      const appName = getCurrentAppName();
+      if (!appName || selectors === "head" || selectors === "body") {
+        return rawQuerySelector.call(rawDocument, selectors);
+      }
+      return (
+        appInstanceMap.get(appName)?.container.querySelector(selectors) ?? null
+      );
     }
 
-    /**
-     * 清空某个应用的监听函数
-     * @param {*} appName 子应用名称
-     */
-    clearDataListener(appName) {
-      eventCenter.off(formatEventName(appName, false));
-    }
+    Document.prototype.querySelector = querySelector;
   }
 
-  // 子应用的数据通信方法集合
-  class EventCenterForMicroApp {
-    constructor(appName) {
-      this.appName = appName;
-    }
-
-    /**
-     * 监听基座应用发送的数据
-     * @param {*} cb 绑定函数
-     */
-    addDataListener(cb) {
-      eventCenter.on(formatEventName(this.appName, true), cb);
-    }
-
-    /**
-     * 解除监听函数
-     * @param {*} cb 绑定函数
-     */
-    removeDataListener(cb) {
-      if (typeof cb === "function") {
-        eventCenter.off(formatEventName(this.appName, true), cb);
-      }
-    }
-
-    dispatch(data) {
-      const app = appInstanceMap.get(this.appName);
-      if (app?.container) {
-        // 子应用以自定义事件的形式发送数据
-        const event = new CustomEvent("datachange", {
-          detail: {
-            data,
-          },
-        });
-
-        app.container.dispatchEvent(event);
-      }
-    }
-
-    /**
-     * 清空当前子应用绑定的所有监听函数
-     */
-    clearDataListener() {
-      eventCenter.off(formatEventName(this.appName, true));
-    }
-  }
+  patchElementPrototype();
 
   // 自定义元素
   class MyElement extends HTMLElement {
+    // 记录微应用个数
+    static microAppCount = 0;
+
     // 声明需要监听的属性名，只有这些属性变化时才会触发attributeChangedCallback
     static get observedAttributes() {
       return ["name", "url"];
@@ -676,6 +793,11 @@
     connectedCallback() {
       // 元素被插入到DOM时执行，此时去加载子应用的静态资源并渲染
       console.log("micro-app is connected");
+
+      // 自定义元素只执行一次的内容
+      if (++MyElement.microAppCount === 1) {
+        patchDocument();
+      }
 
       // 创建微应用实例
       const app = new CreateApp({
@@ -721,38 +843,11 @@
     }
   }
 
-  const BaseAppData = new EventCenterForBaseApp();
-
+  patchElementPrototype();
   const SimpleMicroApp = {
     start() {
       defineElement();
     },
-  };
-
-  // 记录原生方法
-  const rawSetAttribute = Element.prototype.setAttribute;
-
-  // 重写setAttribute
-  Element.prototype.setAttribute = function setAttribute(key, value) {
-    // 目标为micro-app标签且属性名称为data时进行处理
-    if (/^micro-app/i.test(this.tagName) && key === "data") {
-      if (toString.call(value) === "[object Object]") {
-        // 克隆一个新的对象
-        const cloneValue = {};
-        Object.getOwnPropertyNames(value).forEach((propertyKey) => {
-          // 过滤vue框架注入的数据
-          if (
-            !(typeof propertyKey === "string" && propertyKey.indexOf("__") === 0)
-          ) {
-            cloneValue[propertyKey] = value[propertyKey];
-          }
-        });
-        // 发送数据
-        BaseAppData.setData(this.getAttribute("name"), cloneValue);
-      }
-    } else {
-      rawSetAttribute.call(this, key, value);
-    }
   };
 
   SimpleMicroApp.start();
