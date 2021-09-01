@@ -3,6 +3,128 @@
   factory();
 }((function () { 'use strict';
 
+  let templateStyle; // 模板style
+
+  /**
+   * 修改CSS规则，添加前缀
+   * @param {*} rule css规则
+   * @param {*} prefix 前缀
+   * @returns {String}
+   */
+  function scopedStyleRule(rule, prefix) {
+    // 获取CSS规则对象的选择和内容
+    const { selectorText, cssText } = rule;
+
+    // 处理顶层选择器，如body，html都转换为micro-app[name=xxx]
+    if (/^((html[\s>~,]+body)|(html|body|:root))$/.test(selectorText)) {
+      return cssText.replace(/^((html[\s>~,]+body)|(html|body|:root))/, prefix);
+    } else if (selectorText === "*") {
+      // 选择器 * 替换为 micro-app[name=xxx] *
+      return cssText.replace("*", `${prefix} *`);
+    }
+
+    const builtInRootSelectorRE =
+      /(^|\s+)((html[\s>~]+body)|(html|body|:root))(?=[\s>~]+|$)/;
+
+    // 匹配查询选择器
+    return cssText.replace(/^[\s\S]+{/, (selectors) => {
+      return selectors.replace(/(^|,)([^,]+)/g, (all, $1, $2) => {
+        // 如果含有顶层选择器，需要单独处理
+        if (builtInRootSelectorRE.test($2)) {
+          // body[name=xx]|body.xx|body#xx 等都不需要转换
+          return all.replace(builtInRootSelectorRE, prefix);
+        }
+        // 在选择器前加上前缀
+        return `${$1} ${prefix} ${$2.replace(/^\s*/, "")}`;
+      });
+    });
+  }
+  /**
+   * 处理media和supports规则
+   * @param {*} rule cssRules
+   * @param {String} prefix 前缀
+   * @param {String} packName Query类别
+   * @returns
+   */
+  function scopedPackRule(rule, prefix, packName) {
+    // 递归执行scopedRule，处理 media 和 supports 内部规则
+    const result = scopedRule(Array.from(rule.cssRules), prefix);
+    return `@${packName} ${rule.conditionText} {${result}}`;
+  }
+
+  /**
+   * 依次处理每个cssRule
+   * @param {*} rules cssRule
+   * @param {String} prefix 前缀
+   * @returns
+   */
+  function scopedRule(rules, prefix) {
+    let result = "";
+    // 遍历rules，处理每一条规则
+    for (const rule of rules) {
+      switch (rule.type) {
+        case 1: // STYLE_RULE
+          result += scopedStyleRule(rule, prefix);
+          break;
+        case 4: // MEDIA_RULE
+          result += scopedPackRule(rule, prefix, "media");
+          break;
+        case 12: // SUPPORTS_RULE
+          result += scopedPackRule(rule, prefix, "supports");
+          break;
+        default:
+          result += rule.cssText;
+          break;
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * 进行样式隔离
+   * @param {HTMLStyleElement} styleElement style元素
+   * @param {String} appName 应用名称
+   */
+  function scopedCSS(styleElement, appName) {
+    // 前缀
+    const prefix = `micro-app[name=${appName}]`;
+
+    // 初始化时创建模板标签
+    if (!templateStyle) {
+      templateStyle = document.createElement("style");
+      document.body.appendChild(templateStyle);
+      // 设置样式表无效，防止对应用造成影响
+      templateStyle.sheet.disabled = true;
+    }
+
+    if (styleElement.textContent) {
+      // 将元素的内容赋值给模板元素
+      templateStyle.textContent = styleElement.textContent;
+      // 格式化规则，并将格式化后的规则赋值给style元素
+      styleElement.textContent = scopedRule(
+        Array.from(templateStyle.sheet?.cssRules || []),
+        prefix
+      );
+      // 清空模板style内容
+      templateStyle.textContent = "";
+    } else {
+      // 监听动态添加内容的style元素
+      const observer = new MutationObserver(function () {
+        // 断开监听
+        observer.disconnect();
+        // 格式化规则，并将格式化后的规则赋值给style元素
+        styleElement.textContent = scopedRule(
+          Array.from(styleElement.sheet?.cssRules || []),
+          prefix
+        );
+      });
+
+      // 监听style元素的内容是否变化
+      observer.observe(styleElement, { childList: true });
+    }
+  }
+
   /**
    * 获取静态资源
    * @param {string} url 静态资源地址
@@ -28,6 +150,7 @@
           // 拿到css资源后放入style元素并插入到micro-app-head中
           const link2Style = document.createElement("style");
           link2Style.textContent = code;
+          scopedCSS(link2Style, app.name);
           microAppHead.appendChild(link2Style);
 
           // 将代码放入缓存，再次渲染时可以从缓存中获取
@@ -119,7 +242,10 @@
           });
 
           parent.removeChild(dom);
-        } else ;
+        }
+      } else if (dom instanceof HTMLStyleElement) {
+        // 进行样式隔离
+        scopedCSS(dom, app.name);
       }
     }
   }
@@ -230,7 +356,9 @@
     microWindow = {}; // 代理的对象
     injectedKeys = new Set(); // 新添加的属性，在卸载时清空
 
-    constructor() {
+    constructor(appName) {
+      // 创建数据通信对象
+      this.microWindow.microApp = new EventCenterForMicroApp(appName);
       // 卸载钩子
       this.releaseEffect = effect(this.microWindow);
 
@@ -305,6 +433,9 @@
         // 卸载全局事件
         this.releaseEffect();
       }
+
+      // 清空所有绑定函数
+      this.microWindow.microApp.clearDataListener();
     }
 
     // 修改js作用域
@@ -394,6 +525,143 @@
 
   const appInstanceMap = new Map();
 
+  /**
+   * 格式化事件名称，保证基座应用和子应用的绑定通信
+   * @param {*} appName 应用名称
+   * @param {*} fromBaseApp 是否从基座应用发送数据
+   * @returns
+   */
+  function formatEventName(appName, fromBaseApp) {
+    if (typeof appName !== "string" || !appName) {
+      return "";
+    }
+    return fromBaseApp
+      ? `__from_base_app_${appName}__`
+      : `__from_micro_app_${appName}__`;
+  }
+
+  // 发布订阅系统
+  class EventCenter {
+    // 缓存数据和绑定函数
+    eventList = new Map();
+
+    /**
+     * 绑定监听函数
+     * @param {*} name 事件名称
+     * @param {*} f 处理函数
+     */
+    on(name, f) {
+      let eventInfo = this.eventList.get(name);
+      // 如果没有缓存，则初始化
+      if (!eventInfo) {
+        eventInfo = {
+          data: {},
+          callbacks: new Set(),
+        };
+        // 放入缓存
+        this.eventList.set(name, eventInfo);
+      }
+
+      // 记录绑定函数
+      eventInfo.callbacks.add(f);
+    }
+
+    /**
+     * 解除绑定
+     * @param {*} name
+     * @param {*} f
+     */
+    off(name, f) {
+      const eventInfo = this.eventList.get(name);
+      // eventInfo存在且f为函数则卸载指定函数
+      if (eventInfo && typeof f === "function") {
+        eventInfo.callbacks.delete(f);
+      }
+    }
+
+    // 发送数据
+    dispatch(name, data) {
+      const eventInfo = this.eventList.get(name);
+      // 当数据不相等时才更新
+      if (eventInfo && eventInfo.data !== data) {
+        eventInfo.data = data;
+        // 遍历执行所有绑定函数
+        for (const f of eventInfo.callbacks) {
+          f(data);
+        }
+      }
+    }
+  }
+
+  // 创建发布订阅对象
+  const eventCenter = new EventCenter();
+
+  // 基座应用的数据通信方法集合
+  class EventCenterForBaseApp {
+    /**
+     * 向指定子应用发送数据
+     * @param {*} appName 子应用名称
+     * @param {*} data 对象数据
+     */
+    setData(appName, data) {
+      eventCenter.dispatch(formatEventName(appName, true), data);
+    }
+
+    /**
+     * 清空某个应用的监听函数
+     * @param {*} appName 子应用名称
+     */
+    clearDataListener(appName) {
+      eventCenter.off(formatEventName(appName, false));
+    }
+  }
+
+  // 子应用的数据通信方法集合
+  class EventCenterForMicroApp {
+    constructor(appName) {
+      this.appName = appName;
+    }
+
+    /**
+     * 监听基座应用发送的数据
+     * @param {*} cb 绑定函数
+     */
+    addDataListener(cb) {
+      eventCenter.on(formatEventName(this.appName, true), cb);
+    }
+
+    /**
+     * 解除监听函数
+     * @param {*} cb 绑定函数
+     */
+    removeDataListener(cb) {
+      if (typeof cb === "function") {
+        eventCenter.off(formatEventName(this.appName, true), cb);
+      }
+    }
+
+    dispatch(data) {
+      const app = appInstanceMap.get(this.appName);
+      if (app?.container) {
+        // 子应用以自定义事件的形式发送数据
+        const event = new CustomEvent("datachange", {
+          detail: {
+            data,
+          },
+        });
+
+        app.container.dispatchEvent(event);
+      }
+    }
+
+    /**
+     * 清空当前子应用绑定的所有监听函数
+     */
+    clearDataListener() {
+      eventCenter.off(formatEventName(this.appName, true));
+    }
+  }
+
   // 自定义元素
   class MyElement extends HTMLElement {
     // 声明需要监听的属性名，只有这些属性变化时才会触发attributeChangedCallback
@@ -453,19 +721,57 @@
     }
   }
 
+  const BaseAppData = new EventCenterForBaseApp();
+
   const SimpleMicroApp = {
     start() {
       defineElement();
     },
   };
 
+  // 记录原生方法
+  const rawSetAttribute = Element.prototype.setAttribute;
+
+  // 重写setAttribute
+  Element.prototype.setAttribute = function setAttribute(key, value) {
+    // 目标为micro-app标签且属性名称为data时进行处理
+    if (/^micro-app/i.test(this.tagName) && key === "data") {
+      if (toString.call(value) === "[object Object]") {
+        // 克隆一个新的对象
+        const cloneValue = {};
+        Object.getOwnPropertyNames(value).forEach((propertyKey) => {
+          // 过滤vue框架注入的数据
+          if (
+            !(typeof propertyKey === "string" && propertyKey.indexOf("__") === 0)
+          ) {
+            cloneValue[propertyKey] = value[propertyKey];
+          }
+        });
+        // 发送数据
+        BaseAppData.setData(this.getAttribute("name"), cloneValue);
+      }
+    } else {
+      rawSetAttribute.call(this, key, value);
+    }
+  };
+
   SimpleMicroApp.start();
 
   const app = document.querySelector("#app");
+  const microApp = document.querySelector("#container");
   app.innerHTML = "Hello Vue";
   app.addEventListener("click", function () {
-    const container = document.querySelector("#container");
-    container.parentElement.removeChild(container);
+    microApp.parentElement.removeChild(microApp);
+  });
+
+  setTimeout(() => {
+    microApp.setAttribute("data", {
+      name: "Data from Base",
+    });
+  }, 1000);
+
+  microApp.addEventListener("datachange", (e) => {
+    console.log("接收到数据", e.detail.data);
   });
 
 })));
