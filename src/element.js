@@ -8,7 +8,7 @@ class MyElement extends HTMLElement {
 
   // 声明需要监听的属性名，只有这些属性变化时才会触发attributeChangedCallback
   static get observedAttributes() {
-    return ["name", "url"];
+    return ["name", "url", "base-url"];
   }
 
   constructor() {
@@ -28,6 +28,7 @@ class MyElement extends HTMLElement {
     const app = new CreateApp({
       name: this.name,
       url: this.url,
+      baseUrl: this.baseUrl,
       container: this,
     });
 
@@ -59,6 +60,8 @@ class MyElement extends HTMLElement {
       this.name = newVal;
     } else if (attrName === "url" && !this.url && newVal) {
       this.url = newVal;
+    } else if (attrName === "base-url" && !this.baseUrl && newVal) {
+      this.baseUrl = newVal;
     }
   }
 }

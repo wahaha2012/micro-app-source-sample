@@ -65,6 +65,20 @@ export function fetchScriptsFromHtml(app, htmlDom) {
 }
 
 /**
+ * 构建完整URL路径
+ * @param {*} url source url
+ * @param {*} baseUrl base url
+ * @returns
+ */
+export function makeUrl(url, baseUrl) {
+  if (!/^http|^\//i.test(url)) {
+    return baseUrl + url;
+  } else {
+    return url;
+  }
+}
+
+/**
  * 递归处理每一个元素，存入到app实例source map表中
  * @param {*} parent 父元素
  * @param {*} app 应用实例
@@ -84,7 +98,7 @@ export function extractSourceDom(parent, app) {
       const href = dom.getAttribute("href");
       if (dom.getAttribute("rel") === "stylesheet" && href) {
         // 计入source缓存中
-        app.source.links.set(href, {
+        app.source.links.set(makeUrl(href, app.baseUrl), {
           code: "", // 代码内容
         });
       }
@@ -96,7 +110,7 @@ export function extractSourceDom(parent, app) {
       const src = dom.getAttribute("src");
       // 远程script
       if (src) {
-        app.source.scripts.set(src, {
+        app.source.scripts.set(makeUrl(src, app.baseUrl), {
           code: "", // 代码内容
           isExternal: true, // 是否远程script
         });

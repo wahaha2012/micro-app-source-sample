@@ -3,9 +3,10 @@ import Sandbox from "./sandbox";
 
 // 创建微应用
 export default class CreateApp {
-  constructor({ name, url, container }) {
+  constructor({ name, url, baseUrl, container }) {
     this.name = name; // 应用名称
     this.url = url; // url地址
+    this.baseUrl = baseUrl; // base url
     this.container = container; // micro-app元素
     this.status = "loading";
 

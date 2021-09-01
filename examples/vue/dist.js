@@ -203,6 +203,20 @@
   }
 
   /**
+   * 构建完整URL路径
+   * @param {*} url source url
+   * @param {*} baseUrl base url
+   * @returns
+   */
+  function makeUrl(url, baseUrl) {
+    if (!/^http|^\//i.test(url)) {
+      return baseUrl + url;
+    } else {
+      return url;
+    }
+  }
+
+  /**
    * 递归处理每一个元素，存入到app实例source map表中
    * @param {*} parent 父元素
    * @param {*} app 应用实例
@@ -222,7 +236,7 @@
         const href = dom.getAttribute("href");
         if (dom.getAttribute("rel") === "stylesheet" && href) {
           // 计入source缓存中
-          app.source.links.set(href, {
+          app.source.links.set(makeUrl(href, app.baseUrl), {
             code: "", // 代码内容
           });
         }
@@ -234,7 +248,7 @@
         const src = dom.getAttribute("src");
         // 远程script
         if (src) {
-          app.source.scripts.set(src, {
+          app.source.scripts.set(makeUrl(src, app.baseUrl), {
             code: "", // 代码内容
             isExternal: true, // 是否远程script
           });
@@ -275,7 +289,7 @@
         // 将html字符串转换为DOM结构
         const htmlDom = document.createElement("div");
         htmlDom.innerHTML = html;
-        console.log("html:", htmlDom);
+        // console.log("html:", htmlDom);
 
         // 进一步提取和处理js、css等静态资源
         extractSourceDom(htmlDom, app);
@@ -523,6 +537,8 @@
     injectedKeys = new Set(); // 新添加的属性，在卸载时清空
 
     constructor(appName) {
+      const hasOwnProperty = (key) =>
+        this.microWindow.hasOwnProperty(key) || rawWindow.hasOwnProperty(key);
       // 创建数据通信对象
       this.microWindow.microApp = new EventCenterForMicroApp(appName);
       // 卸载钩子
@@ -645,9 +661,10 @@
 
   // 创建微应用
   class CreateApp {
-    constructor({ name, url, container }) {
+    constructor({ name, url, baseUrl, container }) {
       this.name = name; // 应用名称
       this.url = url; // url地址
+      this.baseUrl = baseUrl; // base url
       this.container = container; // micro-app元素
       this.status = "loading";
 
@@ -774,7 +791,9 @@
     Document.prototype.querySelector = querySelector;
   }
 
-  patchElementPrototype();
+  function releaseDocumentPatch() {
+    Document.prototype.querySelector = rawQuerySelector;
+  }
 
   // 自定义元素
   class MyElement extends HTMLElement {
@@ -783,7 +802,7 @@
 
     // 声明需要监听的属性名，只有这些属性变化时才会触发attributeChangedCallback
     static get observedAttributes() {
-      return ["name", "url"];
+      return ["name", "url", "base-url"];
     }
 
     constructor() {
@@ -803,6 +822,7 @@
       const app = new CreateApp({
         name: this.name,
         url: this.url,
+        baseUrl: this.baseUrl,
         container: this,
       });
 
@@ -817,6 +837,12 @@
       const app = appInstanceMap.get(this.name);
       // 如果有属性destroy，则完全卸载应用包括缓存的文件
       app.unmount(this.hasAttribute("destory"));
+
+      if (MyElement.microAppCount > 0) {
+        if (--MyElement.microAppCount === 0) {
+          releaseDocumentPatch();
+        }
+      }
     }
 
     attributeChangedCallback(attrName, oldVal, newVal) {
@@ -828,6 +854,8 @@
         this.name = newVal;
       } else if (attrName === "url" && !this.url && newVal) {
         this.url = newVal;
+      } else if (attrName === "base-url" && !this.baseUrl && newVal) {
+        this.baseUrl = newVal;
       }
     }
   }

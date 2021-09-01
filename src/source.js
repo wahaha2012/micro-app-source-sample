@@ -25,7 +25,7 @@ export default function loadHtml(app) {
       // 将html字符串转换为DOM结构
       const htmlDom = document.createElement("div");
       htmlDom.innerHTML = html;
-      console.log("html:", htmlDom);
+      // console.log("html:", htmlDom);
 
       // 进一步提取和处理js、css等静态资源
       extractSourceDom(htmlDom, app);
