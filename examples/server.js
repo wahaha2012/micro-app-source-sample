@@ -1,4 +1,4 @@
-var liveServer = require("live-server");
+var liveServer = require("@compodoc/live-server");
 
 var params = {
   root: "./examples", // Set root directory that's being served. Defaults to cwd.
