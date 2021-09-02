@@ -54,7 +54,8 @@ export default class CreateApp {
 
     // 执行js
     this.source.scripts.forEach((info) => {
-      (0, eval)(this.sandbox.bindScope(info.code));
+      const code = this.sandbox.bindScope(info.code);
+      (0, eval)(code);
     });
 
     // 标记应用为已渲染

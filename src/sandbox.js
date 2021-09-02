@@ -5,6 +5,8 @@ import {
   setCurrentAppName,
   defer,
   rawDocument,
+  unscopables,
+  escapeSetterKeyList,
 } from "./utils/global";
 
 export default class SandBox {
@@ -22,7 +24,7 @@ export default class SandBox {
 
     this.proxyWindow = new Proxy(this.microWindow, {
       // 取值
-      get(target, key) {
+      get: (target, key) => {
         // 顶层对象
         if (["window", "self", "globalThis"].includes(key)) {
           return this.proxyWindow;
@@ -80,19 +82,28 @@ export default class SandBox {
       },
 
       // 赋值
-      set(target, key, value) {
+      set: (target, key, value) => {
         // 沙箱只有在运行时可以设置变量
         if (this.active) {
-          Reflect.set(target, key, value);
+          if (escapeSetterKeyList.includes(key)) {
+            Reflect.set(rawWindow, key, value);
+          } else {
+            Reflect.set(target, key, value);
 
-          // 记录添加的变量，用于后续清空操作
-          this.injectedKeys.add(key);
+            // 记录添加的变量，用于后续清空操作
+            this.injectedKeys.add(key);
+          }
         }
 
         return true;
       },
 
-      deleteProperty(target, key) {
+      // 重写has方法，使直接访问window属性或方法通过代理方式
+      has: (target, key) => {
+        return key in unscopables || key in target || key in rawWindow;
+      },
+
+      deleteProperty: (target, key) => {
         // 当前key存在于代理对象上时才满足删除条件
         if (target.hasOwnProperty(key)) {
           return Reflect.deleteProperty(target, key);
@@ -130,7 +141,7 @@ export default class SandBox {
 
   // 修改js作用域
   bindScope(code) {
-    window.proxyWindow = this.proxyWindow;
+    rawWindow.proxyWindow = this.proxyWindow;
     return `;(function(window, self){with(window){;${code}\n}}).call(window.proxyWindow, window.proxyWindow, window.proxyWindow);`;
   }
 }

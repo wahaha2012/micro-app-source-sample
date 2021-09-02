@@ -6,7 +6,7 @@ const app = document.querySelector("#app");
 const microApp = document.querySelector("#container");
 app.innerHTML = "Hello Vue";
 app.addEventListener("click", function () {
-  microApp.parentElement.removeChild(microApp);
+  microApp.parentElement && microApp.parentElement.removeChild(microApp);
 });
 
 setTimeout(() => {
