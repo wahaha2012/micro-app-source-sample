@@ -1,4 +1,6 @@
 import { nodeResolve } from "@rollup/plugin-node-resolve";
+import commonjs from "@rollup/plugin-commonjs";
+import replace from "@rollup/plugin-replace";
 
 export default [
   {
@@ -8,13 +10,29 @@ export default [
       format: "umd",
     },
   },
+
   {
-    input: "./examples/vue/app2.js",
+    input: "./examples/vue/official.js",
     output: {
-      file: "./examples/dist/app2.js",
+      file: "./examples/dist/official.js",
       format: "umd",
     },
     // external: ["@micro-zoe/micro-app"],
     plugins: [nodeResolve()],
+  },
+
+  {
+    input: "./examples/qiankun/index.js",
+    output: {
+      file: "./examples/dist/qiankun.js",
+      format: "umd",
+    },
+    plugins: [
+      replace({
+        "process.env.NODE_ENV": JSON.stringify(process.env.NODE_ENV),
+      }),
+      nodeResolve(),
+      commonjs(),
+    ],
   },
 ];
